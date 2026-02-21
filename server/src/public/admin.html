@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CtrlChat Admin</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #090909;
+        --panel: rgba(255, 255, 255, 0.06);
+        --text: #fff;
+        --muted: rgba(255, 255, 255, 0.64);
+        --line: rgba(255, 255, 255, 0.2);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        background: radial-gradient(circle at top right, #181818 0%, #090909 45%);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 24px auto 80px;
+        padding: 0 20px;
+      }
+      h1 {
+        margin: 0 0 16px;
+        font-size: 30px;
+      }
+      .auth {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 20px;
+      }
+      input,
+      button,
+      select,
+      textarea {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.08);
+        color: white;
+        border-radius: 10px;
+        padding: 10px 12px;
+      }
+      button {
+        cursor: pointer;
+      }
+      .grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+      }
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 18px;
+      }
+      .stat {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+      }
+      .stat div {
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 10px;
+        padding: 10px;
+      }
+      .list {
+        max-height: 300px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+      .item {
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      .item:last-child {
+        border-bottom: none;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      @media (max-width: 900px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>CtrlChat Admin</h1>
+      <div class="auth">
+        <input id="token" placeholder="Admin token" style="flex: 1" />
+        <button id="saveToken">Сохранить</button>
+      </div>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Обзор</h2>
+          <div class="stat" id="overview"></div>
+          <button id="reloadOverview" style="margin-top: 10px">Обновить</button>
+        </section>
+
+        <section class="card">
+          <h2>Бан аккаунта</h2>
+          <input id="banUserId" type="number" placeholder="User ID" />
+          <textarea id="banReason" placeholder="Причина" rows="2" style="width: 100%; margin-top: 8px"></textarea>
+          <button id="banUser" style="margin-top: 8px">Забанить</button>
+        </section>
+
+        <section class="card">
+          <h2>Бан IP / Fingerprint</h2>
+          <input id="banIp" placeholder="IP" style="width: 100%" />
+          <input id="banFingerprint" placeholder="Fingerprint" style="width: 100%; margin-top: 8px" />
+          <textarea id="banIpReason" placeholder="Причина" rows="2" style="width: 100%; margin-top: 8px"></textarea>
+          <button id="banIpBtn" style="margin-top: 8px">Забанить</button>
+        </section>
+
+        <section class="card">
+          <h2>Управление сервером</h2>
+          <div class="muted">Работает только если SERVER_CONTROL_ENABLED=true</div>
+          <button id="restartBtn" style="margin-top: 8px">Restart</button>
+          <button id="shutdownBtn" style="margin-top: 8px">Shutdown</button>
+        </section>
+
+        <section class="card">
+          <h2>Жалобы</h2>
+          <div class="list" id="reports"></div>
+          <button id="reloadReports" style="margin-top: 8px">Обновить</button>
+        </section>
+
+        <section class="card">
+          <h2>Стикерпаки</h2>
+          <div class="list" id="packs"></div>
+          <button id="reloadPacks" style="margin-top: 8px">Обновить</button>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      const tokenInput = document.getElementById('token');
+      tokenInput.value = localStorage.getItem('ctrlchat_admin_token') || '';
+
+      document.getElementById('saveToken').onclick = () => {
+        localStorage.setItem('ctrlchat_admin_token', tokenInput.value.trim());
+        alert('Токен сохранен');
+      };
+
+      function token() {
+        return tokenInput.value.trim();
+      }
+
+      async function api(path, opts = {}) {
+        const response = await fetch(`/api/admin${path}`, {
+          ...opts,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-token': token(),
+            ...(opts.headers || {}),
+          },
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `HTTP ${response.status}`);
+        }
+        return response.json();
+      }
+
+      async function loadOverview() {
+        const data = await api('/overview');
+        document.getElementById('overview').innerHTML = `
+          <div><div class="muted">Users</div><div>${data.users}</div></div>
+          <div><div class="muted">Chats</div><div>${data.chats}</div></div>
+          <div><div class="muted">Messages</div><div>${data.messages}</div></div>
+          <div><div class="muted">Open reports</div><div>${data.openReports}</div></div>
+        `;
+      }
+
+      async function loadReports() {
+        const data = await api('/reports');
+        const container = document.getElementById('reports');
+        container.innerHTML = data.reports
+          .map(
+            (r) => `
+          <div class="item">
+            <div><b>#${r.id}</b> ${r.reason}</div>
+            <div class="muted">by @${r.reporterUsername || 'unknown'} -> @${r.targetUsername || 'unknown'}</div>
+            <div class="muted">${r.details || ''}</div>
+            <div style="margin-top:8px;display:flex;gap:8px">
+              <button onclick="setReport(${r.id},'resolved')">Resolve</button>
+              <button onclick="setReport(${r.id},'rejected')">Reject</button>
+              <button onclick="setReport(${r.id},'open')">Open</button>
+            </div>
+          </div>
+        `,
+          )
+          .join('');
+      }
+
+      async function loadPacks() {
+        const data = await api('/stickerpacks');
+        const container = document.getElementById('packs');
+        container.innerHTML = data.packs
+          .map(
+            (p) => `
+          <div class="item">
+            <div><b>#${p.id}</b> ${p.title}</div>
+            <div class="muted">owner: ${p.ownerUserId}, stickers: ${p.stickersCount}</div>
+            <button style="margin-top:8px" onclick="deletePack(${p.id})">Удалить</button>
+          </div>
+        `,
+          )
+          .join('');
+      }
+
+      window.setReport = async (id, status) => {
+        await api(`/reports/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status }),
+        });
+        await loadReports();
+      };
+
+      window.deletePack = async (id) => {
+        await api(`/stickerpacks/${id}`, { method: 'DELETE' });
+        await loadPacks();
+      };
+
+      document.getElementById('reloadOverview').onclick = loadOverview;
+      document.getElementById('reloadReports').onclick = loadReports;
+      document.getElementById('reloadPacks').onclick = loadPacks;
+
+      document.getElementById('banUser').onclick = async () => {
+        const userId = Number(document.getElementById('banUserId').value);
+        const reason = document.getElementById('banReason').value;
+        await api('/ban-user', {
+          method: 'POST',
+          body: JSON.stringify({ userId, reason }),
+        });
+        alert('Пользователь забанен');
+      };
+
+      document.getElementById('banIpBtn').onclick = async () => {
+        const ip = document.getElementById('banIp').value.trim();
+        const fingerprint = document.getElementById('banFingerprint').value.trim();
+        const reason = document.getElementById('banIpReason').value;
+        await api('/ban-ip-fingerprint', {
+          method: 'POST',
+          body: JSON.stringify({ ip: ip || undefined, fingerprint: fingerprint || undefined, reason }),
+        });
+        alert('Блокировка добавлена');
+      };
+
+      document.getElementById('restartBtn').onclick = async () => {
+        await api('/server/restart', { method: 'POST' });
+        alert('Команда restart отправлена');
+      };
+
+      document.getElementById('shutdownBtn').onclick = async () => {
+        await api('/server/shutdown', { method: 'POST' });
+        alert('Команда shutdown отправлена');
+      };
+
+      (async () => {
+        try {
+          await loadOverview();
+          await loadReports();
+          await loadPacks();
+        } catch (error) {
+          console.error(error);
+        }
+      })();
+    </script>
+  </body>
+</html>

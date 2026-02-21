@@ -1,0 +1,15 @@
+[Unit]
+Description=CtrlChat API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ctrlchat/server
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/ctrlchat/server/.env
+
+[Install]
+WantedBy=multi-user.target

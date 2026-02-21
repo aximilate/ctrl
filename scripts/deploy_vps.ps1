@@ -71,8 +71,18 @@ ssh $target $remoteScript
 Assert-LastExitCode "remote install script"
 
 Write-Host "5/6 Health check"
-ssh $target "curl -sf http://127.0.0.1:8080/api/health"
-Assert-LastExitCode "health check"
+$healthOk = $false
+for ($i = 1; $i -le 20; $i++) {
+    ssh $target "curl -sf http://127.0.0.1:8080/api/health" | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $healthOk = $true
+        break
+    }
+    Start-Sleep -Seconds 2
+}
+if (-not $healthOk) {
+    throw "Command failed at step: health check (service did not become healthy in time)"
+}
 
 Write-Host "6/6 Done"
 Write-Host "If first deploy: edit /opt/ctrlchat/server/.env and restart service:"

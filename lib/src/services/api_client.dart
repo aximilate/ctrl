@@ -228,6 +228,75 @@ class ApiClient {
     );
   }
 
+  Future<Map<String, dynamic>> getMyProfile() {
+    return _request('GET', '/users/me', auth: true);
+  }
+
+  Future<AuthUser> updateMyProfile({
+    String? displayName,
+    String? username,
+    String? avatarUrl,
+    String? bio,
+    String? birthDate,
+  }) async {
+    final payload = await _request(
+      'PATCH',
+      '/users/me',
+      auth: true,
+      body: {
+        if (displayName != null) 'displayName': displayName,
+        if (username != null) 'username': username,
+        if (avatarUrl != null) 'avatarUrl': avatarUrl,
+        if (bio != null) 'bio': bio,
+        if (birthDate != null) 'birthDate': birthDate,
+      },
+    );
+    return AuthUser.fromJson(
+      (payload['user'] ?? const {}) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> updatePrivacy({
+    String? avatarVisibility,
+    String? bioVisibility,
+    String? lastSeenVisibility,
+  }) {
+    return _request(
+      'PATCH',
+      '/users/me/privacy',
+      auth: true,
+      body: {
+        if (avatarVisibility != null) 'avatarVisibility': avatarVisibility,
+        if (bioVisibility != null) 'bioVisibility': bioVisibility,
+        if (lastSeenVisibility != null)
+          'lastSeenVisibility': lastSeenVisibility,
+      },
+    );
+  }
+
+  Future<void> changePassword({
+    required String oldPassword,
+    required String newPassword,
+  }) {
+    return _request(
+      'POST',
+      '/users/me/change-password',
+      auth: true,
+      body: {'oldPassword': oldPassword, 'newPassword': newPassword},
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getMySessions() async {
+    final payload = await _request('GET', '/users/me/sessions', auth: true);
+    return ((payload['sessions'] ?? const <dynamic>[]) as List<dynamic>)
+        .map((entry) => (entry as Map).cast<String, dynamic>())
+        .toList();
+  }
+
+  Future<void> revokeMySession(String sessionId) {
+    return _request('DELETE', '/users/me/sessions/$sessionId', auth: true);
+  }
+
   Future<List<Contact>> getContacts({String query = ''}) async {
     final payload = await _request(
       'GET',

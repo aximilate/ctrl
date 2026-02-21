@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -20,6 +23,8 @@ class MessengerPage extends StatefulWidget {
 class _MessengerPageState extends State<MessengerPage> {
   final _searchController = TextEditingController();
   final _composerController = TextEditingController();
+  final Map<int, List<_LocalStory>> _storiesByAccount =
+      <int, List<_LocalStory>>{};
   Timer? _searchDebounce;
   bool _storiesExpanded = false;
   bool _accountsExpanded = false;
@@ -50,11 +55,13 @@ class _MessengerPageState extends State<MessengerPage> {
   void initState() {
     super.initState();
     _searchController.addListener(_onSearchChanged);
+    _composerController.addListener(_onComposerChanged);
   }
 
   @override
   void dispose() {
     _searchController.removeListener(_onSearchChanged);
+    _composerController.removeListener(_onComposerChanged);
     _searchController.dispose();
     _composerController.dispose();
     _searchDebounce?.cancel();
@@ -71,6 +78,13 @@ class _MessengerPageState extends State<MessengerPage> {
     });
   }
 
+  void _onComposerChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+  }
+
   Future<void> _showError(Object error) async {
     if (!mounted) {
       return;
@@ -85,14 +99,17 @@ class _MessengerPageState extends State<MessengerPage> {
     String? imageUrl,
     required String fallback,
     double radius = 18,
+    Uint8List? memoryImage,
   }) {
     return CircleAvatar(
       radius: radius,
       backgroundColor: Colors.white12,
-      backgroundImage: imageUrl != null && imageUrl.isNotEmpty
+      backgroundImage: memoryImage != null
+          ? MemoryImage(memoryImage)
+          : imageUrl != null && imageUrl.isNotEmpty
           ? NetworkImage(imageUrl)
           : null,
-      child: imageUrl == null || imageUrl.isEmpty
+      child: (memoryImage == null && (imageUrl == null || imageUrl.isEmpty))
           ? Text(
               fallback.isEmpty ? '?' : fallback.characters.first.toUpperCase(),
               style: const TextStyle(fontWeight: FontWeight.w700),
@@ -101,80 +118,286 @@ class _MessengerPageState extends State<MessengerPage> {
     );
   }
 
+  List<_LocalStory> _storiesForCurrentAccount(CtrlChatState state) {
+    final userId = state.currentUser?.id;
+    if (userId == null) {
+      return const <_LocalStory>[];
+    }
+    return _storiesByAccount[userId] ?? const <_LocalStory>[];
+  }
+
+  Future<void> _pickStory(CtrlChatState state) async {
+    final user = state.currentUser;
+    if (user == null) {
+      return;
+    }
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.media,
+      withData: true,
+    );
+    if (picked == null || picked.files.isEmpty) {
+      return;
+    }
+    final file = picked.files.first;
+    if (file.bytes == null || file.bytes!.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось прочитать выбранный файл')),
+      );
+      return;
+    }
+    final story = _LocalStory(
+      ownerName: user.displayName,
+      ownerAvatarUrl: user.avatarUrl,
+      fileName: file.name,
+    );
+    setState(() {
+      final mutable = List<_LocalStory>.from(
+        _storiesByAccount[user.id] ?? const <_LocalStory>[],
+      );
+      mutable.insert(0, story);
+      _storiesByAccount[user.id] = mutable;
+      _storiesExpanded = true;
+    });
+  }
+
   Widget _buildStoriesPill(CtrlChatState state) {
-    final chatsWithPeers = state.chats
-        .where((chat) => chat.peer != null)
-        .toList();
-    final avatarCount = _storiesExpanded ? 5 : 3;
-    final visible = chatsWithPeers.take(avatarCount).toList();
+    final stories = _storiesForCurrentAccount(state);
+    final visible = stories.take(_storiesExpanded ? 5 : 3).toList();
 
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
+      duration: const Duration(milliseconds: 360),
+      curve: Curves.easeInOutCubic,
       width: 74,
-      padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
+      height: _storiesExpanded ? 236 : 74,
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(30),
+        borderRadius: BorderRadius.circular(36),
         border: Border.all(color: Colors.white24),
       ),
-      child: InkWell(
-        onTap: () {
-          setState(() {
-            _storiesExpanded = !_storiesExpanded;
-          });
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 260),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, animation) {
+          return FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(scale: animation, child: child),
+          );
         },
-        borderRadius: BorderRadius.circular(24),
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 240),
-          child: !_storiesExpanded
-              ? SizedBox(
-                  key: const ValueKey('stories-collapsed'),
-                  height: 46,
-                  child: Stack(
-                    children: List.generate(
-                      visible.length,
-                      (index) => Positioned(
-                        left: index * 16.0,
-                        top: 4,
-                        child: _buildAvatar(
-                          imageUrl: visible[index].peer?.avatarUrl,
-                          fallback: visible[index].peer?.displayName ?? 'S',
-                          radius: 14,
+        child: !_storiesExpanded
+            ? InkWell(
+                key: const ValueKey('stories-collapsed'),
+                borderRadius: BorderRadius.circular(24),
+                onTap: () {
+                  if (stories.isEmpty) {
+                    _pickStory(state).catchError(_showError);
+                    return;
+                  }
+                  setState(() {
+                    _storiesExpanded = true;
+                  });
+                },
+                child: Center(
+                  child: stories.isEmpty
+                      ? const CircleAvatar(
+                          radius: 18,
+                          backgroundColor: Colors.white,
+                          child: Icon(Icons.add, color: Colors.black, size: 20),
+                        )
+                      : SizedBox(
+                          width: 52,
+                          height: 42,
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: List.generate(visible.length, (index) {
+                              final story = visible[index];
+                              return Positioned(
+                                left: index * 12.0,
+                                top: index * 2.0,
+                                child: _buildAvatar(
+                                  imageUrl: story.ownerAvatarUrl,
+                                  fallback: story.ownerName,
+                                  radius: 14,
+                                ),
+                              );
+                            }),
+                          ),
+                        ),
+                ),
+              )
+            : Column(
+                key: const ValueKey('stories-expanded'),
+                children: [
+                  IconButton(
+                    onPressed: () => _pickStory(state).catchError(_showError),
+                    icon: const CircleAvatar(
+                      radius: 14,
+                      backgroundColor: Colors.white,
+                      child: Icon(Icons.add, color: Colors.black, size: 16),
+                    ),
+                  ),
+                  Expanded(
+                    child: stories.isEmpty
+                        ? const SizedBox.shrink()
+                        : ListView.separated(
+                            itemCount: stories.length.clamp(0, 15),
+                            itemBuilder: (context, index) {
+                              final story = stories[index];
+                              return Tooltip(
+                                message: story.fileName,
+                                child: _buildAvatar(
+                                  imageUrl: story.ownerAvatarUrl,
+                                  fallback: story.ownerName,
+                                  radius: 14,
+                                ),
+                              );
+                            },
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 8),
+                          ),
+                  ),
+                  IconButton(
+                    onPressed: () {
+                      setState(() {
+                        _storiesExpanded = false;
+                      });
+                    },
+                    icon: const Icon(Icons.expand_less_rounded, size: 20),
+                    tooltip: 'Свернуть',
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+
+  List<StoredAccount> _orderedAccounts(CtrlChatState state) {
+    final activeId = state.currentUser?.id;
+    final accounts = List<StoredAccount>.from(state.accounts);
+    accounts.sort((a, b) {
+      if (a.session.user.id == activeId) {
+        return -1;
+      }
+      if (b.session.user.id == activeId) {
+        return 1;
+      }
+      return 0;
+    });
+    return accounts;
+  }
+
+  Widget _buildAccountsPill(CtrlChatState state) {
+    final accounts = _orderedAccounts(state);
+    final visible = _accountsExpanded ? accounts : accounts.take(1).toList();
+    final expandedHeight = 16 + (accounts.length + 1) * 52.0;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 360),
+      curve: Curves.easeInOutCubic,
+      width: 74,
+      height: _accountsExpanded ? expandedHeight : 74,
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(36),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeInOutCubic,
+        alignment: Alignment.bottomCenter,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_accountsExpanded)
+              IconButton(
+                icon: const Icon(Icons.add, size: 20),
+                onPressed: () async {
+                  final allowed = await widget.stateController.canAddAccount();
+                  if (!mounted) {
+                    return;
+                  }
+                  if (!allowed) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Можно добавить максимум 3 аккаунта'),
+                      ),
+                    );
+                    return;
+                  }
+                  context.go('/');
+                },
+              ),
+            if (visible.isEmpty)
+              GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _accountsExpanded = !_accountsExpanded;
+                  });
+                },
+                child: _buildAvatar(
+                  imageUrl: state.currentUser?.avatarUrl,
+                  fallback: state.currentUser?.displayName ?? 'U',
+                  radius: 18,
+                ),
+              ),
+            ...visible.map((entry) {
+              final user = entry.session.user;
+              final active = state.currentUser?.id == user.id;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: GestureDetector(
+                  onTap: () async {
+                    if (!_accountsExpanded) {
+                      setState(() {
+                        _accountsExpanded = true;
+                      });
+                      return;
+                    }
+                    if (active) {
+                      setState(() {
+                        _accountsExpanded = false;
+                      });
+                      return;
+                    }
+                    await widget.stateController.switchAccount(user.id);
+                    if (!mounted) {
+                      return;
+                    }
+                    setState(() {
+                      _accountsExpanded = false;
+                    });
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 220),
+                    width: active ? 40 : 36,
+                    height: active ? 40 : 36,
+                    decoration: BoxDecoration(
+                      color: active ? Colors.white : Colors.white24,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: active ? Colors.white : Colors.transparent,
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Center(
+                      child: Text(
+                        user.displayName.characters.first.toUpperCase(),
+                        style: TextStyle(
+                          color: active ? Colors.black : Colors.white,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                     ),
                   ),
-                )
-              : SizedBox(
-                  key: const ValueKey('stories-expanded'),
-                  height: 210,
-                  child: Column(
-                    children: [
-                      const CircleAvatar(
-                        radius: 14,
-                        backgroundColor: Colors.white,
-                        child: Icon(Icons.add, color: Colors.black, size: 17),
-                      ),
-                      const SizedBox(height: 8),
-                      Expanded(
-                        child: ListView.separated(
-                          itemCount: chatsWithPeers.length.clamp(0, 5),
-                          itemBuilder: (context, index) {
-                            final chat = chatsWithPeers[index];
-                            return _buildAvatar(
-                              imageUrl: chat.peer?.avatarUrl,
-                              fallback: chat.peer?.displayName ?? 'S',
-                              radius: 14,
-                            );
-                          },
-                          separatorBuilder: (_, __) =>
-                              const SizedBox(height: 8),
-                        ),
-                      ),
-                    ],
-                  ),
                 ),
+              );
+            }),
+          ],
         ),
       ),
     );
@@ -214,16 +437,22 @@ class _MessengerPageState extends State<MessengerPage> {
                       onTap: () {
                         widget.stateController.loadTab(entry.key);
                       },
-                      child: Container(
-                        width: 54,
-                        height: 54,
-                        decoration: BoxDecoration(
-                          color: selected ? Colors.white : Colors.transparent,
-                          borderRadius: BorderRadius.circular(28),
-                        ),
-                        child: Icon(
-                          entry.value,
-                          color: selected ? Colors.black : Colors.white,
+                      child: AnimatedScale(
+                        duration: const Duration(milliseconds: 240),
+                        curve: Curves.easeOutCubic,
+                        scale: selected ? 1.06 : 1,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 220),
+                          width: 54,
+                          height: 54,
+                          decoration: BoxDecoration(
+                            color: selected ? Colors.white : Colors.transparent,
+                            borderRadius: BorderRadius.circular(28),
+                          ),
+                          child: Icon(
+                            entry.value,
+                            color: selected ? Colors.black : Colors.white,
+                          ),
                         ),
                       ),
                     ),
@@ -233,76 +462,7 @@ class _MessengerPageState extends State<MessengerPage> {
             ),
           ),
           const Spacer(),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 240),
-            curve: Curves.easeOut,
-            width: 74,
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(40),
-              border: Border.all(color: Colors.white24),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_accountsExpanded)
-                  IconButton(
-                    icon: const Icon(Icons.add, size: 20),
-                    onPressed: () async {
-                      final allowed = await widget.stateController
-                          .canAddAccount();
-                      if (!mounted) {
-                        return;
-                      }
-                      if (!allowed) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Можно добавить максимум 3 аккаунта'),
-                          ),
-                        );
-                        return;
-                      }
-                      context.go('/');
-                    },
-                  ),
-                ...state.accounts.map((entry) {
-                  final user = entry.session.user;
-                  final active = state.currentUser?.id == user.id;
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: GestureDetector(
-                      onTap: () =>
-                          widget.stateController.switchAccount(user.id),
-                      child: CircleAvatar(
-                        radius: active ? 19 : 17,
-                        backgroundColor: active ? Colors.white : Colors.white24,
-                        child: Text(
-                          user.displayName.characters.first.toUpperCase(),
-                          style: TextStyle(
-                            color: active ? Colors.black : Colors.white,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                }),
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _accountsExpanded = !_accountsExpanded;
-                    });
-                  },
-                  child: _buildAvatar(
-                    imageUrl: state.currentUser?.avatarUrl,
-                    fallback: state.currentUser?.displayName ?? 'U',
-                    radius: 18,
-                  ),
-                ),
-              ],
-            ),
-          ),
+          _buildAccountsPill(state),
           const SizedBox(height: 18),
         ],
       ),
@@ -356,16 +516,6 @@ class _MessengerPageState extends State<MessengerPage> {
         ],
       ],
     );
-  }
-
-  String _emptyLabelForTab(CtrlTab tab) {
-    return switch (tab) {
-      CtrlTab.home => 'Чатов пока нет :(',
-      CtrlTab.favorites => 'Избранных контактов пока нет :(',
-      CtrlTab.contacts => 'Контактов пока нет :(',
-      CtrlTab.calls => 'Звонков пока нет :(',
-      CtrlTab.settings => 'Настроек пока нет :(',
-    };
   }
 
   Future<void> _showChatContextMenu(
@@ -485,7 +635,7 @@ class _MessengerPageState extends State<MessengerPage> {
 
     if (state.currentTab == CtrlTab.contacts) {
       if (state.contacts.isEmpty) {
-        return _EmptyPane(label: _emptyLabelForTab(state.currentTab));
+        return const _BlankPane();
       }
       return ListView.separated(
         itemCount: state.contacts.length,
@@ -516,7 +666,7 @@ class _MessengerPageState extends State<MessengerPage> {
 
     if (state.currentTab == CtrlTab.calls) {
       if (state.calls.isEmpty) {
-        return _EmptyPane(label: _emptyLabelForTab(state.currentTab));
+        return const _BlankPane();
       }
       return ListView.builder(
         itemCount: state.calls.length,
@@ -553,7 +703,7 @@ class _MessengerPageState extends State<MessengerPage> {
     }
 
     if (state.chats.isEmpty) {
-      return _EmptyPane(label: _emptyLabelForTab(state.currentTab));
+      return const _BlankPane();
     }
 
     return ListView.separated(
@@ -808,7 +958,14 @@ class _MessengerPageState extends State<MessengerPage> {
   Widget _buildMessageBubble(CtrlChatState state, ChatMessage message) {
     final mine = message.senderId == state.currentUser?.id;
     final text = message.text ?? message.ciphertext ?? '';
-    final isShort = text.length <= 45;
+    final isMedia = text.startsWith('[MEDIA] ');
+    final isDocument = text.startsWith('[DOC] ');
+    final isFile = text.startsWith('[FILE] ');
+    final isAttachment = isMedia || isDocument || isFile;
+    final attachmentName = isAttachment
+        ? text.replaceFirst(RegExp(r'^\[[A-Z]+\]\s*'), '')
+        : text;
+    final isShort = attachmentName.length <= 45;
     final created = DateTime.tryParse(message.createdAt);
     final time = DateFormat('HH:mm').format(created ?? DateTime.now());
 
@@ -867,7 +1024,26 @@ class _MessengerPageState extends State<MessengerPage> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Flexible(child: Text(text)),
+                      Flexible(
+                        child: isAttachment
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    isMedia
+                                        ? Icons.perm_media_rounded
+                                        : isDocument
+                                        ? Icons.description_rounded
+                                        : Icons.insert_drive_file_rounded,
+                                    size: 16,
+                                    color: Colors.white70,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Flexible(child: Text(attachmentName)),
+                                ],
+                              )
+                            : Text(text),
+                      ),
                       const SizedBox(width: 8),
                       Row(
                         mainAxisSize: MainAxisSize.min,
@@ -896,7 +1072,23 @@ class _MessengerPageState extends State<MessengerPage> {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(text),
+                      isAttachment
+                          ? Row(
+                              children: [
+                                Icon(
+                                  isMedia
+                                      ? Icons.perm_media_rounded
+                                      : isDocument
+                                      ? Icons.description_rounded
+                                      : Icons.insert_drive_file_rounded,
+                                  size: 17,
+                                  color: Colors.white70,
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(child: Text(attachmentName)),
+                              ],
+                            )
+                          : Text(text),
                       const SizedBox(height: 6),
                       Align(
                         alignment: Alignment.centerRight,
@@ -1097,24 +1289,58 @@ class _MessengerPageState extends State<MessengerPage> {
     );
   }
 
+  Future<void> _pickAndSendAttachment(String kind) async {
+    if (widget.stateController.selectedChatId == null) {
+      return;
+    }
+    FilePickerResult? picked;
+    if (kind == 'media') {
+      picked = await FilePicker.platform.pickFiles(type: FileType.media);
+    } else if (kind == 'document') {
+      picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: <String>[
+          'pdf',
+          'doc',
+          'docx',
+          'txt',
+          'xls',
+          'xlsx',
+          'ppt',
+          'pptx',
+        ],
+      );
+    } else {
+      picked = await FilePicker.platform.pickFiles(type: FileType.any);
+    }
+    if (picked == null || picked.files.isEmpty) {
+      return;
+    }
+    final fileName = picked.files.first.name.trim();
+    if (fileName.isEmpty) {
+      return;
+    }
+    try {
+      await widget.stateController.sendAttachment(
+        attachmentKind: kind,
+        fileName: fileName,
+      );
+    } catch (error) {
+      await _showError(error);
+    }
+  }
+
   Widget _buildChatPane(CtrlChatState state) {
     if (state.currentTab == CtrlTab.settings) {
       return _SettingsDetailPane(
         section: _settingsSection,
-        user: state.currentUser,
-        apiBase: state.apiBaseUrl,
+        stateController: widget.stateController,
       );
     }
 
     final chat = state.selectedChat;
     if (chat == null) {
-      return _EmptyPane(
-        label: state.currentTab == CtrlTab.contacts
-            ? 'Выберите контакт'
-            : state.currentTab == CtrlTab.calls
-            ? 'История звонков'
-            : 'Выберите чат',
-      );
+      return const _BlankPane();
     }
 
     final messages = state.selectedMessages;
@@ -1219,25 +1445,16 @@ class _MessengerPageState extends State<MessengerPage> {
           padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
           child: Row(
             children: [
-              IconButton(
+              PopupMenuButton<String>(
+                tooltip: 'Прикрепить',
                 icon: const Icon(Icons.attach_file_rounded),
-                onPressed: () async {
-                  final selected = await showMenu<String>(
-                    context: context,
-                    position: const RelativeRect.fromLTRB(30, 30, 0, 0),
-                    items: const [
-                      PopupMenuItem(value: 'media', child: Text('Мультимедиа')),
-                      PopupMenuItem(value: 'document', child: Text('Документ')),
-                      PopupMenuItem(value: 'file', child: Text('Файл')),
-                    ],
-                  );
-                  if (!mounted || selected == null) {
-                    return;
-                  }
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(SnackBar(content: Text('Выбрано: $selected')));
-                },
+                onSelected: (value) =>
+                    _pickAndSendAttachment(value).catchError(_showError),
+                itemBuilder: (context) => const [
+                  PopupMenuItem(value: 'media', child: Text('Мультимедиа')),
+                  PopupMenuItem(value: 'document', child: Text('Документ')),
+                  PopupMenuItem(value: 'file', child: Text('Файл')),
+                ],
               ),
               Expanded(
                 child: TextField(
@@ -1365,19 +1582,34 @@ class _MessengerPageState extends State<MessengerPage> {
                         borderRadius: BorderRadius.circular(22),
                         border: Border.all(color: Colors.white12),
                       ),
-                      child: _buildChatPane(state),
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 320),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        transitionBuilder: (child, animation) {
+                          return FadeTransition(
+                            opacity: animation,
+                            child: SlideTransition(
+                              position: Tween<Offset>(
+                                begin: const Offset(0.06, 0),
+                                end: Offset.zero,
+                              ).animate(animation),
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: KeyedSubtree(
+                          key: ValueKey(
+                            '${state.currentTab.name}/${state.selectedChatId ?? 'none'}/$_settingsSection',
+                          ),
+                          child: _buildChatPane(state),
+                        ),
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
-          ),
-          floatingActionButton: FloatingActionButton.extended(
-            backgroundColor: Colors.white,
-            foregroundColor: Colors.black,
-            onPressed: () => widget.stateController.logoutActive(),
-            label: const Text('Выйти'),
-            icon: const Icon(Icons.logout),
           ),
         );
       },
@@ -1385,30 +1617,12 @@ class _MessengerPageState extends State<MessengerPage> {
   }
 }
 
-class _EmptyPane extends StatelessWidget {
-  const _EmptyPane({required this.label});
-
-  final String label;
+class _BlankPane extends StatelessWidget {
+  const _BlankPane();
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.sentiment_dissatisfied_rounded,
-            size: 82,
-            color: Colors.white.withValues(alpha: 0.45),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            label,
-            style: const TextStyle(color: Colors.white70, fontSize: 18),
-          ),
-        ],
-      ),
-    );
+    return const SizedBox.expand();
   }
 }
 
@@ -1436,41 +1650,45 @@ class _SettingsList extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       children: [
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Row(
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundColor: Colors.white24,
-                child: Text(
-                  user?.displayName.characters.first.toUpperCase() ?? 'U',
+        InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => onTap('profile'),
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: Colors.white24,
+                  child: Text(
+                    user?.displayName.characters.first.toUpperCase() ?? 'U',
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      user?.displayName ?? 'Unknown',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    Text(
-                      '@${user?.username ?? 'unknown'}',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        user?.displayName ?? 'Unknown',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
-                    ),
-                  ],
+                      Text(
+                        '@${user?.username ?? 'unknown'}',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
         const SizedBox(height: 10),
@@ -1491,20 +1709,523 @@ class _SettingsList extends StatelessWidget {
   }
 }
 
-class _SettingsDetailPane extends StatelessWidget {
+class _SettingsDetailPane extends StatefulWidget {
   const _SettingsDetailPane({
     required this.section,
-    required this.user,
-    required this.apiBase,
+    required this.stateController,
   });
 
   final String section;
-  final AuthUser? user;
-  final String apiBase;
+  final CtrlChatState stateController;
+
+  @override
+  State<_SettingsDetailPane> createState() => _SettingsDetailPaneState();
+}
+
+class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
+  final _displayNameController = TextEditingController();
+  final _usernameController = TextEditingController();
+  final _bioController = TextEditingController();
+  final _birthDateController = TextEditingController();
+  final _oldPasswordController = TextEditingController();
+  final _newPasswordController = TextEditingController();
+  final _newPasswordConfirmController = TextEditingController();
+  bool _seeded = false;
+  Uint8List? _avatarBytes;
+  String _avatarVisibility = 'everyone';
+  String _bioVisibility = 'everyone';
+  String _lastSeenVisibility = 'contacts';
+  String _language = 'ru';
+  bool _notifyContacts = true;
+  bool _notifyGroups = true;
+  bool _notifyChannels = true;
+  bool _notifyBots = true;
+
+  CtrlChatState get _state => widget.stateController;
+
+  @override
+  void initState() {
+    super.initState();
+    _hydrateFromState(force: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SettingsDetailPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.stateController.currentUser?.id !=
+        widget.stateController.currentUser?.id) {
+      _hydrateFromState(force: true);
+    } else {
+      _hydrateFromState();
+    }
+  }
+
+  @override
+  void dispose() {
+    _displayNameController.dispose();
+    _usernameController.dispose();
+    _bioController.dispose();
+    _birthDateController.dispose();
+    _oldPasswordController.dispose();
+    _newPasswordController.dispose();
+    _newPasswordConfirmController.dispose();
+    super.dispose();
+  }
+
+  void _hydrateFromState({bool force = false}) {
+    if (_seeded && !force) {
+      return;
+    }
+    final user = _state.currentUser;
+    _displayNameController.text = user?.displayName ?? '';
+    _usernameController.text = user?.username ?? '';
+    _bioController.text = user?.bio ?? '';
+    _birthDateController.text = '';
+    final privacy = _state.privacy;
+    _avatarVisibility = privacy['avatarVisibility'] ?? 'everyone';
+    _bioVisibility = privacy['bioVisibility'] ?? 'everyone';
+    _lastSeenVisibility = privacy['lastSeenVisibility'] ?? 'contacts';
+    _seeded = true;
+  }
+
+  Future<void> _pickAvatar() async {
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      withData: true,
+    );
+    if (picked == null || picked.files.isEmpty) {
+      return;
+    }
+    final bytes = picked.files.first.bytes;
+    if (bytes == null || bytes.isEmpty) {
+      return;
+    }
+    setState(() {
+      _avatarBytes = bytes;
+    });
+  }
+
+  void _showInfo(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
+  }
+
+  Future<void> _saveProfile() async {
+    try {
+      String? avatarUrl;
+      if (_avatarBytes != null) {
+        avatarUrl = 'data:image/png;base64,${base64Encode(_avatarBytes!)}';
+      }
+      await _state.updateProfile(
+        displayName: _displayNameController.text.trim(),
+        username: _usernameController.text.trim().toLowerCase(),
+        bio: _bioController.text.trim(),
+        birthDate: _birthDateController.text.trim().isEmpty
+            ? null
+            : _birthDateController.text.trim(),
+        avatarUrl: avatarUrl,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _avatarBytes = null;
+      });
+      _showInfo('Профиль сохранен');
+    } catch (error) {
+      _showInfo(error.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  Future<void> _savePrivacy() async {
+    try {
+      await _state.updatePrivacy(
+        avatarVisibility: _avatarVisibility,
+        bioVisibility: _bioVisibility,
+        lastSeenVisibility: _lastSeenVisibility,
+      );
+      _showInfo('Настройки конфиденциальности сохранены');
+    } catch (error) {
+      _showInfo(error.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  Future<void> _refreshSessions() async {
+    try {
+      await _state.loadSessions();
+    } catch (error) {
+      _showInfo(error.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  Future<void> _revokeSession(String sessionId) async {
+    try {
+      await _state.revokeSession(sessionId);
+      _showInfo('Сеанс завершен');
+    } catch (error) {
+      _showInfo(error.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  Future<void> _savePassword() async {
+    final oldPassword = _oldPasswordController.text;
+    final newPassword = _newPasswordController.text;
+    final confirmPassword = _newPasswordConfirmController.text;
+    if (newPassword != confirmPassword) {
+      _showInfo('Новый пароль и подтверждение не совпадают');
+      return;
+    }
+    try {
+      await _state.changePassword(
+        oldPassword: oldPassword,
+        newPassword: newPassword,
+      );
+      _oldPasswordController.clear();
+      _newPasswordController.clear();
+      _newPasswordConfirmController.clear();
+      _showInfo('Пароль изменен');
+    } catch (error) {
+      _showInfo(error.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  Widget _buildProfileSection() {
+    final user = _state.currentUser;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            GestureDetector(
+              onTap: _pickAvatar,
+              child: CircleAvatar(
+                radius: 28,
+                backgroundColor: Colors.white12,
+                backgroundImage: _avatarBytes != null
+                    ? MemoryImage(_avatarBytes!)
+                    : user?.avatarUrl != null && user!.avatarUrl!.isNotEmpty
+                    ? NetworkImage(user.avatarUrl!)
+                    : null,
+                child:
+                    (_avatarBytes == null &&
+                        (user?.avatarUrl == null || user!.avatarUrl!.isEmpty))
+                    ? Text(
+                        (user?.displayName ?? 'U').characters.first
+                            .toUpperCase(),
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      )
+                    : null,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Нажмите на аватар, чтобы заменить',
+                style: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ),
+            OutlinedButton.icon(
+              onPressed: _state.loading
+                  ? null
+                  : () => _state.logoutActive().catchError((_) {}),
+              icon: const Icon(Icons.logout_rounded),
+              label: const Text('Выйти'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _LabeledInput(label: 'Имя', controller: _displayNameController),
+        const SizedBox(height: 10),
+        _LabeledInput(label: 'Username', controller: _usernameController),
+        const SizedBox(height: 10),
+        _LabeledInput(label: 'Описание', controller: _bioController),
+        const SizedBox(height: 10),
+        _LabeledInput(
+          label: 'Дата рождения (YYYY-MM-DD)',
+          controller: _birthDateController,
+        ),
+        const SizedBox(height: 14),
+        ElevatedButton(
+          onPressed: _state.loading ? null : _saveProfile,
+          child: const Text('Сохранить профиль'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPrivacySection() {
+    final variants = const <Map<String, String>>[
+      {'id': 'everyone', 'title': 'Все'},
+      {'id': 'contacts', 'title': 'Контакты'},
+      {'id': 'nobody', 'title': 'Никто'},
+    ];
+    DropdownButtonFormField<String> dropdown(
+      String label,
+      String value,
+      ValueChanged<String> onChanged,
+    ) {
+      return DropdownButtonFormField<String>(
+        value: value,
+        decoration: InputDecoration(
+          labelText: label,
+          filled: true,
+          fillColor: Colors.white.withValues(alpha: 0.06),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+        items: variants
+            .map(
+              (entry) => DropdownMenuItem<String>(
+                value: entry['id'],
+                child: Text(entry['title'] ?? ''),
+              ),
+            )
+            .toList(),
+        onChanged: (next) {
+          if (next == null) {
+            return;
+          }
+          onChanged(next);
+        },
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        dropdown('Кто видит аватар', _avatarVisibility, (value) {
+          setState(() {
+            _avatarVisibility = value;
+          });
+        }),
+        const SizedBox(height: 10),
+        dropdown('Кто видит описание', _bioVisibility, (value) {
+          setState(() {
+            _bioVisibility = value;
+          });
+        }),
+        const SizedBox(height: 10),
+        dropdown('Кто видит время захода', _lastSeenVisibility, (value) {
+          setState(() {
+            _lastSeenVisibility = value;
+          });
+        }),
+        const SizedBox(height: 14),
+        ElevatedButton(
+          onPressed: _state.loading ? null : _savePrivacy,
+          child: const Text('Сохранить конфиденциальность'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSessionsSection() {
+    final sessions = _state.sessions;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            ElevatedButton.icon(
+              onPressed: _state.loading ? null : _refreshSessions,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Обновить'),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              'Всего: ${sessions.length}',
+              style: const TextStyle(color: Colors.white70),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (sessions.isEmpty)
+          const Text(
+            'Нет данных о сессиях',
+            style: TextStyle(color: Colors.white70),
+          ),
+        ...sessions.map((entry) {
+          final current = entry['current'] == true;
+          final revokedAt = entry['revokedAt'];
+          return Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.devices_rounded, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text((entry['userAgent'] ?? 'Unknown device').toString()),
+                      const SizedBox(height: 2),
+                      Text(
+                        'IP: ${(entry['ip'] ?? '-').toString()}',
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                      if (revokedAt != null)
+                        const Text(
+                          'Завершен',
+                          style: TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                    ],
+                  ),
+                ),
+                if (!current && revokedAt == null)
+                  TextButton(
+                    onPressed: _state.loading
+                        ? null
+                        : () => _revokeSession(
+                            (entry['id'] ?? '').toString(),
+                          ).catchError((_) {}),
+                    child: const Text('Выкинуть'),
+                  ),
+                if (current)
+                  const Text(
+                    'Текущий',
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _buildLanguageSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          children: [
+            ChoiceChip(
+              label: const Text('Русский'),
+              selected: _language == 'ru',
+              onSelected: (_) {
+                setState(() {
+                  _language = 'ru';
+                });
+              },
+            ),
+            ChoiceChip(
+              label: const Text('English'),
+              selected: _language == 'en',
+              onSelected: (_) {
+                setState(() {
+                  _language = 'en';
+                });
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Язык применяется в клиенте мгновенно после полной локализации экранов.',
+          style: TextStyle(color: Colors.white70),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNotificationSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SwitchListTile.adaptive(
+          value: _notifyContacts,
+          onChanged: (value) {
+            setState(() {
+              _notifyContacts = value;
+            });
+          },
+          title: const Text('Сообщения от контактов'),
+        ),
+        SwitchListTile.adaptive(
+          value: _notifyGroups,
+          onChanged: (value) {
+            setState(() {
+              _notifyGroups = value;
+            });
+          },
+          title: const Text('Сообщения от групп'),
+        ),
+        SwitchListTile.adaptive(
+          value: _notifyChannels,
+          onChanged: (value) {
+            setState(() {
+              _notifyChannels = value;
+            });
+          },
+          title: const Text('Сообщения от каналов'),
+        ),
+        SwitchListTile.adaptive(
+          value: _notifyBots,
+          onChanged: (value) {
+            setState(() {
+              _notifyBots = value;
+            });
+          },
+          title: const Text('Сообщения от ботов'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton(
+          onPressed: () => _showInfo(
+            'Разрешение на браузерные уведомления запроси в настройках сайта браузера',
+          ),
+          child: const Text('Разрешение браузера'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSecuritySection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _LabeledInput(
+          label: 'Старый пароль',
+          controller: _oldPasswordController,
+          obscure: true,
+        ),
+        const SizedBox(height: 10),
+        _LabeledInput(
+          label: 'Новый пароль',
+          controller: _newPasswordController,
+          obscure: true,
+        ),
+        const SizedBox(height: 10),
+        _LabeledInput(
+          label: 'Повторите новый пароль',
+          controller: _newPasswordConfirmController,
+          obscure: true,
+        ),
+        const SizedBox(height: 14),
+        ElevatedButton(
+          onPressed: _state.loading ? null : _savePassword,
+          child: const Text('Сменить пароль'),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          'Текущая почта: ${_state.currentUser?.email ?? '-'}',
+          style: const TextStyle(color: Colors.white70),
+        ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final title = switch (section) {
+    final title = switch (widget.section) {
       'profile' => 'Профиль',
       'privacy' => 'Конфиденциальность',
       'sessions' => 'Активные сеансы',
@@ -1513,122 +2234,81 @@ class _SettingsDetailPane extends StatelessWidget {
       'security' => 'Смена пароля и почты',
       _ => 'Настройки',
     };
+    final body = switch (widget.section) {
+      'profile' => _buildProfileSection(),
+      'privacy' => _buildPrivacySection(),
+      'sessions' => _buildSessionsSection(),
+      'language' => _buildLanguageSection(),
+      'notifications' => _buildNotificationSection(),
+      'security' => _buildSecuritySection(),
+      _ => const SizedBox.shrink(),
+    };
 
     return Padding(
       padding: const EdgeInsets.all(20),
       child: ListView(
         children: [
-          Text(
-            title,
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+          Row(
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Spacer(),
+              if (_state.loading)
+                const CircularProgressIndicator(strokeWidth: 2),
+            ],
           ),
           const SizedBox(height: 16),
-          if (section == 'profile') ...[
-            const _SettingField(
-              label: 'Имя',
-              value: 'Можно изменить в этом блоке',
-            ),
-            _SettingField(
-              label: 'Текущий username',
-              value: '@${user?.username ?? 'unknown'}',
-            ),
-            const _SettingField(
-              label: 'Описание',
-              value: 'Добавьте публичное описание профиля',
-            ),
-            const _SettingField(
-              label: 'Дата рождения',
-              value: 'Можно добавить в профиле',
-            ),
-          ],
-          if (section == 'privacy') ...[
-            const _SettingField(
-              label: 'Аватарка',
-              value: 'Видно: всем / контактам / никому',
-            ),
-            const _SettingField(
-              label: 'Описание',
-              value: 'Видно: всем / контактам / никому',
-            ),
-            const _SettingField(
-              label: 'Время захода',
-              value: 'Видно: всем / контактам / никому',
-            ),
-          ],
-          if (section == 'sessions') ...[
-            const _SettingField(
-              label: 'Устройства',
-              value: 'Показываются в API /users/me/sessions',
-            ),
-            const _SettingField(
-              label: 'IP',
-              value: 'Есть возможность завершать сессии',
-            ),
-          ],
-          if (section == 'language') ...[
-            const _SettingField(label: 'Русский', value: 'Доступен'),
-            const _SettingField(label: 'English', value: 'Available'),
-          ],
-          if (section == 'notifications') ...[
-            const _SettingField(
-              label: 'Контакты',
-              value: 'Вкл/выкл + исключения',
-            ),
-            const _SettingField(
-              label: 'Группы/каналы/боты',
-              value: 'Вкл/выкл + исключения',
-            ),
-            const _SettingField(
-              label: 'Браузерные уведомления',
-              value: 'Запрос разрешения',
-            ),
-          ],
-          if (section == 'security') ...[
-            const _SettingField(
-              label: 'Пароль',
-              value: 'Изменение через API /users/me/change-password',
-            ),
-            const _SettingField(
-              label: 'Почта',
-              value: 'Добавляется в следующем релизе',
-            ),
-            _SettingField(label: 'API', value: apiBase),
-          ],
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            child: KeyedSubtree(key: ValueKey(widget.section), child: body),
+          ),
         ],
       ),
     );
   }
 }
 
-class _SettingField extends StatelessWidget {
-  const _SettingField({required this.label, required this.value});
+class _LabeledInput extends StatelessWidget {
+  const _LabeledInput({
+    required this.label,
+    required this.controller,
+    this.obscure = false,
+  });
 
   final String label;
-  final String value;
+  final TextEditingController controller;
+  final bool obscure;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 160,
-            child: Text(
-              label,
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ),
-          Expanded(
-            child: Text(value, style: const TextStyle(color: Colors.white70)),
-          ),
-        ],
+    return TextField(
+      controller: controller,
+      obscureText: obscure,
+      decoration: InputDecoration(
+        labelText: label,
+        filled: true,
+        fillColor: Colors.white.withValues(alpha: 0.06),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
+}
+
+class _LocalStory {
+  const _LocalStory({
+    required this.ownerName,
+    required this.ownerAvatarUrl,
+    required this.fileName,
+  });
+
+  final String ownerName;
+  final String? ownerAvatarUrl;
+  final String fileName;
 }

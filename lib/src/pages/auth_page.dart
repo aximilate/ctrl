@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -183,160 +184,80 @@ class _AuthPageState extends State<AuthPage> {
     }
   }
 
-  Widget _buildLoginCard(CtrlChatState state) {
-    final title = _loginStep == _LoginStep.credentials
-        ? 'Вход'
-        : '2FA подтверждение';
-    return _AuthCardFrame(
-      title: title,
-      subtitle: _loginStep == _LoginStep.credentials
-          ? 'Пароль + код из письма обязательны'
-          : 'Введите код подтверждения из письма',
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 380),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInCubic,
-        transitionBuilder: (child, animation) {
-          final offsetAnimation = Tween<Offset>(
-            begin: const Offset(0, 0.2),
-            end: Offset.zero,
-          ).animate(animation);
-          return FadeTransition(
-            opacity: animation,
-            child: SlideTransition(position: offsetAnimation, child: child),
-          );
-        },
-        child: _loginStep == _LoginStep.credentials
-            ? Column(
-                key: const ValueKey('login-credentials'),
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _GlassInput(
-                    controller: _loginEmailController,
-                    hint: 'Email',
-                    keyboardType: TextInputType.emailAddress,
-                  ),
-                  const SizedBox(height: 12),
-                  _GlassInput(
-                    controller: _loginPasswordController,
-                    hint: 'Пароль',
-                    obscure: true,
-                  ),
-                  const SizedBox(height: 18),
-                  _PrimaryButton(
-                    label: state.loading ? 'Проверяем...' : 'Войти',
-                    onPressed: state.loading ? null : _handleLoginCredentials,
-                  ),
-                ],
-              )
-            : Column(
-                key: const ValueKey('login-code'),
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _GlassInput(
-                    controller: _loginCodeController,
-                    hint: '6-значный код',
-                    keyboardType: TextInputType.number,
-                  ),
-                  if (state.devCodeHint != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      'DEV CODE: ${state.devCodeHint}',
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 12,
-                        letterSpacing: 1,
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 18),
-                  _PrimaryButton(
-                    label: state.loading ? 'Подтверждаем...' : 'Подтвердить',
-                    onPressed: state.loading ? null : _handleLoginCode,
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: state.loading
-                        ? null
-                        : () {
-                            setState(() {
-                              _loginStep = _LoginStep.credentials;
-                              _loginCodeController.clear();
-                            });
-                          },
-                    child: const Text('Назад'),
-                  ),
-                ],
+  Widget _buildStepCardSwitcher({
+    required Key activeKey,
+    required Widget child,
+  }) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 440),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      layoutBuilder: (currentChild, previousChildren) {
+        return Stack(
+          alignment: Alignment.topCenter,
+          children: [
+            ...previousChildren,
+            if (currentChild != null) currentChild,
+          ],
+        );
+      },
+      transitionBuilder: (stepChild, animation) {
+        return AnimatedBuilder(
+          animation: animation,
+          child: stepChild,
+          builder: (context, animatedChild) {
+            final t = animation.value.clamp(0.0, 1.0);
+            final incoming = stepChild.key == activeKey;
+            final dy = incoming
+                ? (lerpDouble(-0.24, 0, t) ?? 0)
+                : (lerpDouble(0, 0.24, 1 - t) ?? 0);
+            return Opacity(
+              opacity: t,
+              child: FractionalTranslation(
+                translation: Offset(0, dy),
+                child: animatedChild,
               ),
-      ),
-      footer: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Text('Нет аккаунта?', style: TextStyle(color: Colors.white70)),
-          TextButton(
-            onPressed: state.loading
-                ? null
-                : () {
-                    setState(() {
-                      _mode = _AuthMode.register;
-                    });
-                  },
-            child: const Text('Зарегистрироваться'),
-          ),
-        ],
-      ),
+            );
+          },
+        );
+      },
+      child: child,
     );
   }
 
-  Widget _buildRegisterCard(CtrlChatState state) {
-    final title = switch (_registerStep) {
-      _RegisterStep.email => 'Регистрация',
-      _RegisterStep.code => 'Подтверждение почты',
-      _RegisterStep.password => 'Пароль',
-      _RegisterStep.profile => 'Профиль',
-    };
-
-    return _AuthCardFrame(
-      title: title,
-      subtitle: 'Шаг ${_registerStep.index + 1} из 4',
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 320),
-        transitionBuilder: (child, animation) {
-          return FadeTransition(
-            opacity: animation,
-            child: SlideTransition(
-              position: Tween<Offset>(
-                begin: const Offset(0, 0.12),
-                end: Offset.zero,
-              ).animate(animation),
-              child: child,
-            ),
-          );
-        },
-        child: switch (_registerStep) {
-          _RegisterStep.email => Column(
-            key: const ValueKey('register-email'),
+  Widget _buildLoginCard(CtrlChatState state) {
+    final stepKey = ValueKey<String>('login-${_loginStep.name}');
+    final title = _loginStep == _LoginStep.credentials
+        ? 'Вход'
+        : '2FA подтверждение';
+    final body = _loginStep == _LoginStep.credentials
+        ? Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _GlassInput(
-                controller: _registerEmailController,
+                controller: _loginEmailController,
                 hint: 'Email',
                 keyboardType: TextInputType.emailAddress,
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
+              _GlassInput(
+                controller: _loginPasswordController,
+                hint: 'Пароль',
+                obscure: true,
+              ),
+              const SizedBox(height: 18),
               _PrimaryButton(
-                label: state.loading ? 'Отправка...' : 'Отправить код',
-                onPressed: state.loading ? null : _handleRegisterEmail,
+                label: state.loading ? 'Проверяем...' : 'Войти',
+                onPressed: state.loading ? null : _handleLoginCredentials,
               ),
             ],
-          ),
-          _RegisterStep.code => Column(
-            key: const ValueKey('register-code'),
+          )
+        : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _GlassInput(
-                controller: _registerCodeController,
-                hint: 'Код из письма',
+                controller: _loginCodeController,
+                hint: '6-значный код',
                 keyboardType: TextInputType.number,
               ),
               if (state.devCodeHint != null) ...[
@@ -350,102 +271,202 @@ class _AuthPageState extends State<AuthPage> {
                   ),
                 ),
               ],
-              const SizedBox(height: 14),
+              const SizedBox(height: 18),
               _PrimaryButton(
-                label: state.loading ? 'Проверка...' : 'Подтвердить код',
-                onPressed: state.loading ? null : _handleRegisterCode,
+                label: state.loading ? 'Подтверждаем...' : 'Подтвердить',
+                onPressed: state.loading ? null : _handleLoginCode,
+              ),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: state.loading
+                    ? null
+                    : () {
+                        setState(() {
+                          _loginStep = _LoginStep.credentials;
+                          _loginCodeController.clear();
+                        });
+                      },
+                child: const Text('Назад'),
               ),
             ],
-          ),
-          _RegisterStep.password => Column(
-            key: const ValueKey('register-password'),
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _GlassInput(
-                controller: _registerPasswordController,
-                hint: 'Пароль',
-                obscure: true,
-              ),
-              const SizedBox(height: 12),
-              _GlassInput(
-                controller: _registerPasswordConfirmController,
-                hint: 'Повторите пароль',
-                obscure: true,
-              ),
-              const SizedBox(height: 14),
-              _PrimaryButton(
-                label: state.loading ? 'Сохраняем...' : 'Дальше',
-                onPressed: state.loading ? null : _handleRegisterPassword,
-              ),
-            ],
-          ),
-          _RegisterStep.profile => Column(
-            key: const ValueKey('register-profile'),
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  GestureDetector(
-                    onTap: _pickAvatar,
-                    child: CircleAvatar(
-                      radius: 28,
-                      backgroundColor: Colors.white12,
-                      backgroundImage: _avatarBytes == null
-                          ? null
-                          : MemoryImage(_avatarBytes!),
-                      child: _avatarBytes == null
-                          ? const Icon(Icons.add_a_photo, color: Colors.white70)
-                          : null,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Нажмите, чтобы загрузить аватар',
-                      style: TextStyle(color: Colors.white70),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              _GlassInput(controller: _displayNameController, hint: 'Имя'),
-              const SizedBox(height: 12),
-              _GlassInput(
-                controller: _usernameController,
-                hint: 'Username (a-z0-9_)',
-              ),
-              const SizedBox(height: 12),
-              _GlassInput(controller: _bioController, hint: 'Описание'),
-              const SizedBox(height: 14),
-              _PrimaryButton(
-                label: state.loading
-                    ? 'Создаем аккаунт...'
-                    : 'Завершить регистрацию',
-                onPressed: state.loading ? null : _handleRegisterProfile,
-              ),
-            ],
-          ),
-        },
+          );
+    return _buildStepCardSwitcher(
+      activeKey: stepKey,
+      child: _AuthCardFrame(
+        key: stepKey,
+        title: title,
+        subtitle: _loginStep == _LoginStep.credentials
+            ? 'Пароль + код из письма обязательны'
+            : 'Введите код подтверждения из письма',
+        child: body,
+        footer: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'Нет аккаунта?',
+              style: TextStyle(color: Colors.white70),
+            ),
+            TextButton(
+              onPressed: state.loading
+                  ? null
+                  : () {
+                      setState(() {
+                        _mode = _AuthMode.register;
+                      });
+                    },
+              child: const Text('Зарегистрироваться'),
+            ),
+          ],
+        ),
       ),
-      footer: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
+    );
+  }
+
+  Widget _buildRegisterCard(CtrlChatState state) {
+    final stepKey = ValueKey<String>('register-${_registerStep.name}');
+    final title = switch (_registerStep) {
+      _RegisterStep.email => 'Регистрация',
+      _RegisterStep.code => 'Подтверждение почты',
+      _RegisterStep.password => 'Пароль',
+      _RegisterStep.profile => 'Профиль',
+    };
+
+    final body = switch (_registerStep) {
+      _RegisterStep.email => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
-            'Уже есть аккаунт?',
-            style: TextStyle(color: Colors.white70),
+          _GlassInput(
+            controller: _registerEmailController,
+            hint: 'Email',
+            keyboardType: TextInputType.emailAddress,
           ),
-          TextButton(
-            onPressed: state.loading
-                ? null
-                : () {
-                    setState(() {
-                      _mode = _AuthMode.login;
-                      _loginStep = _LoginStep.credentials;
-                    });
-                  },
-            child: const Text('Войти'),
+          const SizedBox(height: 14),
+          _PrimaryButton(
+            label: state.loading ? 'Отправка...' : 'Отправить код',
+            onPressed: state.loading ? null : _handleRegisterEmail,
           ),
         ],
+      ),
+      _RegisterStep.code => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _GlassInput(
+            controller: _registerCodeController,
+            hint: 'Код из письма',
+            keyboardType: TextInputType.number,
+          ),
+          if (state.devCodeHint != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              'DEV CODE: ${state.devCodeHint}',
+              style: const TextStyle(
+                color: Colors.white54,
+                fontSize: 12,
+                letterSpacing: 1,
+              ),
+            ),
+          ],
+          const SizedBox(height: 14),
+          _PrimaryButton(
+            label: state.loading ? 'Проверка...' : 'Подтвердить код',
+            onPressed: state.loading ? null : _handleRegisterCode,
+          ),
+        ],
+      ),
+      _RegisterStep.password => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _GlassInput(
+            controller: _registerPasswordController,
+            hint: 'Пароль',
+            obscure: true,
+          ),
+          const SizedBox(height: 12),
+          _GlassInput(
+            controller: _registerPasswordConfirmController,
+            hint: 'Повторите пароль',
+            obscure: true,
+          ),
+          const SizedBox(height: 14),
+          _PrimaryButton(
+            label: state.loading ? 'Сохраняем...' : 'Дальше',
+            onPressed: state.loading ? null : _handleRegisterPassword,
+          ),
+        ],
+      ),
+      _RegisterStep.profile => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              GestureDetector(
+                onTap: _pickAvatar,
+                child: CircleAvatar(
+                  radius: 28,
+                  backgroundColor: Colors.white12,
+                  backgroundImage: _avatarBytes == null
+                      ? null
+                      : MemoryImage(_avatarBytes!),
+                  child: _avatarBytes == null
+                      ? const Icon(Icons.add_a_photo, color: Colors.white70)
+                      : null,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Нажмите, чтобы загрузить аватар',
+                  style: TextStyle(color: Colors.white70),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _GlassInput(controller: _displayNameController, hint: 'Имя'),
+          const SizedBox(height: 12),
+          _GlassInput(
+            controller: _usernameController,
+            hint: 'Username (a-z0-9_)',
+          ),
+          const SizedBox(height: 12),
+          _GlassInput(controller: _bioController, hint: 'Описание'),
+          const SizedBox(height: 14),
+          _PrimaryButton(
+            label: state.loading
+                ? 'Создаем аккаунт...'
+                : 'Завершить регистрацию',
+            onPressed: state.loading ? null : _handleRegisterProfile,
+          ),
+        ],
+      ),
+    };
+    return _buildStepCardSwitcher(
+      activeKey: stepKey,
+      child: _AuthCardFrame(
+        key: stepKey,
+        title: title,
+        subtitle: 'Шаг ${_registerStep.index + 1} из 4',
+        child: body,
+        footer: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'Уже есть аккаунт?',
+              style: TextStyle(color: Colors.white70),
+            ),
+            TextButton(
+              onPressed: state.loading
+                  ? null
+                  : () {
+                      setState(() {
+                        _mode = _AuthMode.login;
+                        _loginStep = _LoginStep.credentials;
+                      });
+                    },
+              child: const Text('Войти'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -643,6 +664,7 @@ class _TypewriterHeroState extends State<_TypewriterHero> {
 
 class _AuthCardFrame extends StatelessWidget {
   const _AuthCardFrame({
+    super.key,
     required this.title,
     required this.subtitle,
     required this.child,
@@ -665,6 +687,7 @@ class _AuthCardFrame extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(22),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(

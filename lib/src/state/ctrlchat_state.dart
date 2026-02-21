@@ -67,6 +67,12 @@ class CtrlChatState extends ChangeNotifier {
       <String, List<ChatMessage>>{};
   final Map<String, List<Map<String, dynamic>>> _searchByScope =
       <String, List<Map<String, dynamic>>>{};
+  Map<String, String> _privacy = const <String, String>{
+    'avatarVisibility': 'everyone',
+    'bioVisibility': 'everyone',
+    'lastSeenVisibility': 'contacts',
+  };
+  List<Map<String, dynamic>> _sessions = const <Map<String, dynamic>>[];
   String _searchScope = 'messages';
   String _searchQuery = '';
 
@@ -119,6 +125,8 @@ class CtrlChatState extends ChangeNotifier {
   String get searchQuery => _searchQuery;
   List<Map<String, dynamic>> get searchResults =>
       _searchByScope[_searchScope] ?? const [];
+  Map<String, String> get privacy => _privacy;
+  List<Map<String, dynamic>> get sessions => _sessions;
   String? get loginChallengeId => _loginChallengeId;
   String? get registerFlowToken => _registerFlowToken;
   String? get devCodeHint => _devCodeHint;
@@ -131,7 +139,7 @@ class CtrlChatState extends ChangeNotifier {
     _setLoading(true);
     _error = null;
     try {
-      _accounts = await _store.loadAccounts();
+      _accounts = _deduplicateAccounts(await _store.loadAccounts());
       final activeId = await _store.loadActiveUserId();
       if (_accounts.isNotEmpty) {
         final selected = _accounts.firstWhere(
@@ -371,7 +379,7 @@ class CtrlChatState extends ChangeNotifier {
         case CtrlTab.calls:
           _calls = await _api.getCalls();
         case CtrlTab.settings:
-        // static view
+          await _loadSettingsSnapshot();
       }
     } on ApiError catch (error) {
       _error = error.message;
@@ -410,7 +418,7 @@ class CtrlChatState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> sendMessage(String text) async {
+  Future<void> sendMessage(String text, {String? type}) async {
     final chatId = _selectedChatId;
     if (chatId == null || text.trim().isEmpty) {
       return;
@@ -439,7 +447,7 @@ class CtrlChatState extends ChangeNotifier {
         text: content,
         ciphertext: ciphertext,
         replyToId: _replyToMessageId,
-        type: _videoNoteMode ? 'video_note' : 'text',
+        type: type ?? (_videoNoteMode ? 'video_note' : 'text'),
       );
       final list = List<ChatMessage>.from(
         _messagesByChat[chatId] ?? const <ChatMessage>[],
@@ -455,6 +463,19 @@ class CtrlChatState extends ChangeNotifier {
     } finally {
       notifyListeners();
     }
+  }
+
+  Future<void> sendAttachment({
+    required String attachmentKind,
+    required String fileName,
+  }) {
+    final type = attachmentKind == 'media' ? 'media' : 'file';
+    final label = switch (attachmentKind) {
+      'media' => '[MEDIA] $fileName',
+      'document' => '[DOC] $fileName',
+      _ => '[FILE] $fileName',
+    };
+    return sendMessage(label, type: type);
   }
 
   Future<void> editMessage({
@@ -565,6 +586,134 @@ class CtrlChatState extends ChangeNotifier {
   Future<Map<String, dynamic>> getPublicProfile(String username) =>
       _api.getPublicProfile(username);
 
+  Future<void> refreshSettings() async {
+    _error = null;
+    _setLoading(true);
+    try {
+      await _loadSettingsSnapshot();
+    } on ApiError catch (error) {
+      _error = error.message;
+      rethrow;
+    } finally {
+      _setLoading(false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> updateProfile({
+    String? displayName,
+    String? username,
+    String? avatarUrl,
+    String? bio,
+    String? birthDate,
+  }) async {
+    _error = null;
+    _setLoading(true);
+    try {
+      final user = await _api.updateMyProfile(
+        displayName: displayName,
+        username: username,
+        avatarUrl: avatarUrl,
+        bio: bio,
+        birthDate: birthDate,
+      );
+      await _replaceCurrentUser(user);
+    } on ApiError catch (error) {
+      _error = error.message;
+      rethrow;
+    } finally {
+      _setLoading(false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> updatePrivacy({
+    String? avatarVisibility,
+    String? bioVisibility,
+    String? lastSeenVisibility,
+  }) async {
+    _error = null;
+    _setLoading(true);
+    try {
+      await _api.updatePrivacy(
+        avatarVisibility: avatarVisibility,
+        bioVisibility: bioVisibility,
+        lastSeenVisibility: lastSeenVisibility,
+      );
+      _privacy = <String, String>{
+        'avatarVisibility': avatarVisibility ?? _privacy['avatarVisibility']!,
+        'bioVisibility': bioVisibility ?? _privacy['bioVisibility']!,
+        'lastSeenVisibility':
+            lastSeenVisibility ?? _privacy['lastSeenVisibility']!,
+      };
+    } on ApiError catch (error) {
+      _error = error.message;
+      rethrow;
+    } finally {
+      _setLoading(false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> changePassword({
+    required String oldPassword,
+    required String newPassword,
+  }) async {
+    _error = null;
+    _setLoading(true);
+    try {
+      await _api.changePassword(
+        oldPassword: oldPassword,
+        newPassword: newPassword,
+      );
+    } on ApiError catch (error) {
+      _error = error.message;
+      rethrow;
+    } finally {
+      _setLoading(false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> loadSessions() async {
+    _error = null;
+    _setLoading(true);
+    try {
+      _sessions = await _api.getMySessions();
+    } on ApiError catch (error) {
+      _error = error.message;
+      rethrow;
+    } finally {
+      _setLoading(false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> revokeSession(String sessionId) async {
+    _error = null;
+    _setLoading(true);
+    try {
+      await _api.revokeMySession(sessionId);
+      _sessions = _sessions
+          .map((entry) {
+            if ((entry['id'] ?? '') == sessionId) {
+              return <String, dynamic>{
+                ...entry,
+                'revokedAt': DateTime.now().toUtc().toIso8601String(),
+              };
+            }
+            return entry;
+          })
+          .toList(growable: false);
+    } on ApiError catch (error) {
+      _error = error.message;
+      rethrow;
+    } finally {
+      _setLoading(false);
+      notifyListeners();
+    }
+  }
+
   Future<void> _applySession(
     AuthSession session, {
     required bool setActive,
@@ -592,6 +741,59 @@ class CtrlChatState extends ChangeNotifier {
     }
   }
 
+  Future<void> _replaceCurrentUser(AuthUser user) async {
+    final current = _activeSession;
+    if (current == null) {
+      return;
+    }
+    final updatedSession = AuthSession(
+      accessToken: current.accessToken,
+      refreshToken: current.refreshToken,
+      user: user,
+    );
+    _activeSession = updatedSession;
+    _accounts = _accounts
+        .map((entry) {
+          if (entry.session.user.id == user.id) {
+            return StoredAccount(session: updatedSession);
+          }
+          return entry;
+        })
+        .toList(growable: false);
+    await _store.saveAccounts(_accounts, user.id);
+  }
+
+  Future<void> _loadSettingsSnapshot() async {
+    final payload = await _api.getMyProfile();
+    final user = AuthUser.fromJson(
+      (payload['user'] ?? const <String, dynamic>{}) as Map<String, dynamic>,
+    );
+    final privacyRaw =
+        (payload['privacy'] ?? const <String, dynamic>{})
+            as Map<String, dynamic>;
+    _privacy = <String, String>{
+      'avatarVisibility': (privacyRaw['avatarVisibility'] ?? 'everyone')
+          .toString(),
+      'bioVisibility': (privacyRaw['bioVisibility'] ?? 'everyone').toString(),
+      'lastSeenVisibility': (privacyRaw['lastSeenVisibility'] ?? 'contacts')
+          .toString(),
+    };
+    _sessions = await _api.getMySessions();
+    await _replaceCurrentUser(user);
+  }
+
+  List<StoredAccount> _deduplicateAccounts(List<StoredAccount> source) {
+    final seen = <int>{};
+    final result = <StoredAccount>[];
+    for (final entry in source) {
+      final userId = entry.session.user.id;
+      if (seen.add(userId)) {
+        result.add(entry);
+      }
+    }
+    return result;
+  }
+
   void _clearRuntimeData({bool keepAuth = false}) {
     _currentTab = CtrlTab.home;
     _chats = const [];
@@ -600,6 +802,12 @@ class CtrlChatState extends ChangeNotifier {
     _selectedChatId = null;
     _messagesByChat.clear();
     _searchByScope.clear();
+    _privacy = const <String, String>{
+      'avatarVisibility': 'everyone',
+      'bioVisibility': 'everyone',
+      'lastSeenVisibility': 'contacts',
+    };
+    _sessions = const <Map<String, dynamic>>[];
     _searchScope = 'messages';
     _searchQuery = '';
     _loginChallengeId = null;

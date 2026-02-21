@@ -78,21 +78,21 @@ SMTP_FROM="CtrlChat <no-reply@ctrlapp.ru>"
 ## Деплой на VPS (176.32.37.18)
 
 Целевой сценарий:
-- фронтенд (статический build Flutter) на `ctrlchat.ru`;
-- API на `web.ctrlchat.ru` (`/api` + `/admin`).
+- фронтенд (статический build Flutter) на `ctrlapp.ru`;
+- API на `web.ctrlapp.ru` (`/api` + `/admin`).
 
 Рекомендуемая схема:
 1. Собрать frontend:
 ```bash
-flutter build web --release --dart-define=CTRLCHAT_API_URL=https://web.ctrlchat.ru/api
+flutter build web --release --dart-define=CTRLCHAT_API_URL=https://web.ctrlapp.ru/api
 ```
 2. Залить `build/web` в `/var/www/ctrlchat`.
 3. Развернуть `server/` в `/opt/ctrlchat/server`, установить зависимости `npm ci --omit=dev`.
 4. Запустить API как systemd service (`ctrlchat-api`), проксировать через Nginx.
 
 Пример Nginx:
-- `server_name ctrlchat.ru` -> `root /var/www/ctrlchat`.
-- `server_name web.ctrlchat.ru` -> `proxy_pass http://127.0.0.1:8080`.
+- `server_name ctrlapp.ru` -> `root /var/www/ctrlchat`.
+- `server_name web.ctrlapp.ru` -> `proxy_pass http://127.0.0.1:8080`.
 
 ## API (основные маршруты)
 

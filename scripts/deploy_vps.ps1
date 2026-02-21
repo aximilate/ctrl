@@ -16,7 +16,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 Write-Host "1/6 Build Flutter Web"
-flutter build web --release --dart-define=CTRLCHAT_API_URL=https://web.ctrlchat.ru/api
+flutter build web --release --dart-define=CTRLCHAT_API_URL=https://web.ctrlapp.ru/api
 Assert-LastExitCode "flutter build web"
 
 Write-Host "2/6 Prepare bundle"

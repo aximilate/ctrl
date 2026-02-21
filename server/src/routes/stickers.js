@@ -22,7 +22,7 @@ stickersRouter.get('/packs', authRequired, (_req, res) => {
       ownerUserId: row.owner_user_id,
       title: row.title,
       stickersCount: row.stickers_count,
-      shareUrl: `https://ctrlchat.ru/stikerpack/${row.id}`,
+      shareUrl: `https://ctrlapp.ru/stikerpack/${row.id}`,
       createdAt: row.created_at,
     })),
   });
@@ -40,7 +40,7 @@ stickersRouter.post('/packs', authRequired, (req, res) => {
     .run(req.auth.userId, parsed.data.title, nowIso());
   res.json({
     id: Number(info.lastInsertRowid),
-    shareUrl: `https://ctrlchat.ru/stikerpack/${info.lastInsertRowid}`,
+    shareUrl: `https://ctrlapp.ru/stikerpack/${info.lastInsertRowid}`,
   });
 });
 
